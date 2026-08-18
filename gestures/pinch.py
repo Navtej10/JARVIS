@@ -13,6 +13,7 @@ import math
 
 from gestures.gesture_state_machine import GestureStateMachine
 from tracking.hand_tracker import HandFrame
+from gestures.utils import is_finger_extended
 
 
 class PinchGesture(GestureStateMachine):
@@ -36,4 +37,17 @@ class PinchGesture(GestureStateMachine):
             return False
             
         normalized_dist = pinch_dist / ref_dist
-        return normalized_dist < self.distance_threshold
+        if normalized_dist >= self.distance_threshold:
+            return False
+            
+        # To avoid confusion with a Fist, at least one other finger (middle, ring, pinky) 
+        # or the index finger itself must be somewhat extended. A true fist has all fingers closed.
+        index_extended = is_finger_extended(hand_frame, 5, 8)
+        middle_extended = is_finger_extended(hand_frame, 9, 12)
+        ring_extended = is_finger_extended(hand_frame, 13, 16)
+        pinky_extended = is_finger_extended(hand_frame, 17, 20)
+        
+        is_fist = not (index_extended or middle_extended or ring_extended or pinky_extended)
+        
+        # It's a pinch if distance is small and it's not a fist
+        return not is_fist

@@ -32,11 +32,13 @@ class ScreenPoint:
     y: int
 
 
-class ExponentialSmoother:
-    """Simple EMA smoother: smoothed = alpha * new + (1 - alpha) * smoothed_prev."""
+class SpeedAdaptiveSmoother:
+    """Speed-adaptive EMA smoother: smooth heavily when slow, track fast when moving."""
 
-    def __init__(self, alpha: float = 0.4):
-        self.alpha = alpha
+    def __init__(self, min_alpha: float = 0.05, max_alpha: float = 0.8, speed_factor: float = 10.0):
+        self.min_alpha = min_alpha
+        self.max_alpha = max_alpha
+        self.speed_factor = speed_factor
         self._value: tuple[float, float] | None = None
 
     def update(self, x: float, y: float) -> tuple[float, float]:
@@ -44,9 +46,12 @@ class ExponentialSmoother:
             self._value = (x, y)
         else:
             prev_x, prev_y = self._value
+            dist = math.hypot(x - prev_x, y - prev_y)
+            # alpha scales with speed (distance between frames)
+            alpha = self.min_alpha + (self.max_alpha - self.min_alpha) * min(1.0, dist * self.speed_factor)
             self._value = (
-                self.alpha * x + (1 - self.alpha) * prev_x,
-                self.alpha * y + (1 - self.alpha) * prev_y,
+                alpha * x + (1 - alpha) * prev_x,
+                alpha * y + (1 - alpha) * prev_y,
             )
         return self._value
 
@@ -61,9 +66,7 @@ class LandmarkProcessor:
         self.calibration = calibration
         self.screen_width = screen_width
         self.screen_height = screen_height
-        self.smoother = ExponentialSmoother(
-            alpha=calibration.get("cursor", {}).get("smoothing_alpha", 0.4)
-        )
+        self.smoother = SpeedAdaptiveSmoother()
         self._last_emitted_norm: tuple[float, float] | None = None
         self._last_screen_point: ScreenPoint | None = None
         self._transform_matrix: np.ndarray | None = None
@@ -112,6 +115,10 @@ class LandmarkProcessor:
         else:
             target_nx = smooth_x
             target_ny = smooth_y
+            
+        # Clamp mapped point immediately to prevent corner flicker
+        target_nx = max(0.0, min(1.0, target_nx))
+        target_ny = max(0.0, min(1.0, target_ny))
         
         # Base case
         if self._last_emitted_norm is None:
@@ -135,7 +142,7 @@ class LandmarkProcessor:
             
         # 4. Apply Acceleration
         if accel_curve == "quadratic":
-            accel_factor = 1.0 + (dist_px / 50.0)
+            accel_factor = 1.0 + (dist_px / 150.0)
             dx *= accel_factor
             dy *= accel_factor
             

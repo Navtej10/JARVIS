@@ -9,6 +9,7 @@ import math
 
 from gestures.gesture_state_machine import GestureStateMachine
 from tracking.hand_tracker import HandFrame
+from gestures.utils import is_finger_extended
 
 
 class FistGesture(GestureStateMachine):
@@ -44,4 +45,11 @@ class FistGesture(GestureStateMachine):
         
         # An open hand typically has normalized_avg > 2.0
         # A closed fist usually has normalized_avg < 1.2
-        return normalized_avg < self.distance_threshold
+        if normalized_avg >= self.distance_threshold:
+            return False
+            
+        # To distinguish from a POINT gesture or PINCH, ensure index finger is not explicitly extended
+        if is_finger_extended(hand_frame, 5, 8, threshold=1.2):
+            return False
+            
+        return True

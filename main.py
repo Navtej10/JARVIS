@@ -29,6 +29,7 @@ from tracking.landmark_processor import LandmarkProcessor
 from gestures.pinch import PinchGesture
 from gestures.scroll import ScrollGesture
 from gestures.fist import FistGesture
+from gestures.point import PointGesture
 from interaction.cursor import VirtualCursor
 from interaction.window_manager import WindowManager
 from interaction.object_manager import ObjectManager
@@ -83,6 +84,11 @@ def build_pipeline():
         hold_frames_required=60, # ~2 seconds at 30 fps
         cooldown_ms=1000
     )
+    
+    point = PointGesture(
+        hold_frames_required=3,
+        cooldown_ms=250
+    )
 
     # TODO(V2): add SwipeGesture, GrabGesture instances here.
     # TODO(V3): construct BridgeServer(object_manager) and run it on an asyncio task
@@ -102,7 +108,7 @@ def build_pipeline():
         "window_manager": window_manager,
         "object_manager": object_manager,
         "action_executor": action_executor,
-        "gestures": [pinch, scroll, fist],
+        "gestures": [pinch, scroll, fist, point],
     }
 
 
@@ -194,6 +200,12 @@ def run() -> None:
                             if abs(delta_y) > 0:
                                 cursor.scroll(delta_y * 2)
                                 last_scroll_y = screen_point.y
+                                
+                    elif event.name == "point":
+                        if event.state.name == "START":
+                            logger.info("[POINT] Pointing started")
+                        elif event.state.name == "RELEASE":
+                            logger.info("[POINT] Pointing ended")
                                 
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt received. Shutting down...")
