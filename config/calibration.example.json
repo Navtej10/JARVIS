@@ -1,0 +1,50 @@
+{
+  "_comment": "Copy to calibration.json after running the calibration routine. Values below are placeholders.",
+  "camera": {
+    "index": 0,
+    "capture_width": 1280,
+    "capture_height": 720,
+    "fps": 30
+  },
+  "screen": {
+    "width": 1920,
+    "height": 1080
+  },
+  "hand_space_corners": {
+    "_comment": "Normalized (0-1) hand positions recorded during the 4-corner calibration routine (V1). Maps camera-space to screen-space.",
+    "top_left": [
+      0.0,
+      0.0
+    ],
+    "top_right": [
+      0.0,
+      0.0
+    ],
+    "bottom_left": [
+      0.0,
+      0.0
+    ],
+    "bottom_right": [
+      0.0,
+      0.0
+    ]
+  },
+  "cursor": {
+    "smoothing_alpha": 0.4,
+    "dead_zone_px": 3,
+    "acceleration_curve": "quadratic"
+  },
+  "gesture_thresholds": {
+    "pinch_distance_threshold": 0.2,
+    "pinch_hold_frames": 3,
+    "detection_confidence_min": 0.7,
+    "gesture_cooldown_ms": 250
+  },
+  "depth": {
+    "_comment": "V6 only",
+    "near_zone_mm": 300,
+    "mid_zone_mm": 600,
+    "far_zone_mm": 900,
+    "hysteresis_mm": 40
+  }
+}
