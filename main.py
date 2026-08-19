@@ -30,6 +30,7 @@ from gestures.pinch import PinchGesture
 from gestures.scroll import ScrollGesture
 from gestures.fist import FistGesture
 from gestures.point import PointGesture
+from gestures.palm import OpenPalmGesture
 from interaction.cursor import VirtualCursor
 from interaction.window_manager import WindowManager
 from interaction.object_manager import ObjectManager
@@ -89,6 +90,11 @@ def build_pipeline():
         hold_frames_required=3,
         cooldown_ms=250
     )
+    
+    open_palm = OpenPalmGesture(
+        hold_frames_required=3,
+        cooldown_ms=250
+    )
 
     # TODO(V2): add SwipeGesture, GrabGesture instances here.
     # TODO(V3): construct BridgeServer(object_manager) and run it on an asyncio task
@@ -108,7 +114,7 @@ def build_pipeline():
         "window_manager": window_manager,
         "object_manager": object_manager,
         "action_executor": action_executor,
-        "gestures": [pinch, scroll, fist, point],
+        "gestures": [pinch, scroll, fist, point, open_palm],
     }
 
 
@@ -119,6 +125,8 @@ def run() -> None:
     processor = pipeline["landmark_processor"]
     
     last_scroll_y = 0
+    is_scrolling = False
+    is_palm_open = False
     
     # Telemetry state
     last_tracking_time = time.time()
@@ -174,7 +182,8 @@ def run() -> None:
             
             # 1. Update Cursor Position
             screen_point = processor.to_screen_point(hand.index_tip)
-            cursor.move_to(screen_point)
+            if not is_scrolling and not is_palm_open:
+                cursor.move_to(screen_point)
             
             # 2. Process Gestures
             for gesture in pipeline["gestures"]:
@@ -195,17 +204,28 @@ def run() -> None:
                     elif event.name == "scroll":
                         if event.state.name == "START":
                             last_scroll_y = screen_point.y
+                            is_scrolling = True
                         elif event.state.name == "HOLD":
                             delta_y = last_scroll_y - screen_point.y
                             if abs(delta_y) > 0:
                                 cursor.scroll(delta_y * 2)
                                 last_scroll_y = screen_point.y
+                        elif event.state.name == "RELEASE":
+                            is_scrolling = False
                                 
                     elif event.name == "point":
                         if event.state.name == "START":
                             logger.info("[POINT] Pointing started")
                         elif event.state.name == "RELEASE":
                             logger.info("[POINT] Pointing ended")
+                            
+                    elif event.name == "open_palm":
+                        if event.state.name == "START":
+                            logger.info("[PALM] Open palm started, pausing cursor")
+                            is_palm_open = True
+                        elif event.state.name == "RELEASE":
+                            logger.info("[PALM] Open palm ended, resuming cursor")
+                            is_palm_open = False
                                 
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt received. Shutting down...")
