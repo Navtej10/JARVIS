@@ -4,18 +4,17 @@ interaction/window_manager.py  (V2)
 Small internal API for OS window/desktop control. Gesture logic should
 NEVER call OS window APIs directly -- it calls these methods, so porting
 to a different OS later only touches this file.
-
-TODO(V2): implement each method using pywin32 (Windows) -- e.g.
-          win32gui.SetWindowPos, win32gui.MoveWindow, virtual desktop
-          switching via the undocumented IVirtualDesktopManager COM API
-          (or a helper library like pyvda).
-TODO(V2): add a macOS backend (Quartz / AppleScript) and a Linux backend
-          (wmctrl / X11) behind the same interface, selected by platform
-          at import time.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
+
+try:
+    import win32gui
+    import win32api
+    import win32con
+except ImportError:
+    pass
 
 
 @dataclass
@@ -26,30 +25,60 @@ class WindowHandle:
 
 class WindowManager:
     def list_windows(self) -> list[WindowHandle]:
-        raise NotImplementedError("TODO(V2): enumerate top-level windows")
+        windows = []
+        def enum_handler(hwnd, ctx):
+            if win32gui.IsWindowVisible(hwnd) and win32gui.GetWindowText(hwnd):
+                windows.append(WindowHandle(hwnd, win32gui.GetWindowText(hwnd)))
+        win32gui.EnumWindows(enum_handler, None)
+        return windows
 
     def get_focused_window(self) -> WindowHandle | None:
-        raise NotImplementedError("TODO(V2): return the currently focused window")
+        hwnd = win32gui.GetForegroundWindow()
+        if hwnd:
+            return WindowHandle(hwnd, win32gui.GetWindowText(hwnd))
+        return None
 
     def move_window(self, window: WindowHandle, dx: int, dy: int) -> None:
-        raise NotImplementedError("TODO(V2): move window by (dx, dy) pixels")
+        rect = win32gui.GetWindowRect(window.id)
+        x, y, w, h = rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1]
+        win32gui.MoveWindow(window.id, x + dx, y + dy, w, h, True)
 
     def resize_window(self, window: WindowHandle, dw: int, dh: int) -> None:
-        raise NotImplementedError("TODO(V2): resize window by (dw, dh) pixels")
+        rect = win32gui.GetWindowRect(window.id)
+        x, y, w, h = rect[0], rect[1], rect[2] - rect[0], rect[3] - rect[1]
+        win32gui.MoveWindow(window.id, x, y, max(1, w + dw), max(1, h + dh), True)
 
     def snap_window(self, window: WindowHandle, side: str) -> None:
         """side: 'left' | 'right' | 'top' | 'maximize'"""
-        raise NotImplementedError("TODO(V2): snap window to screen half/quadrant")
+        sw = win32api.GetSystemMetrics(win32con.SM_CXSCREEN)
+        sh = win32api.GetSystemMetrics(win32con.SM_CYSCREEN)
+        if side == 'left':
+            win32gui.MoveWindow(window.id, 0, 0, sw // 2, sh, True)
+        elif side == 'right':
+            win32gui.MoveWindow(window.id, sw // 2, 0, sw // 2, sh, True)
+        elif side == 'top':
+            win32gui.MoveWindow(window.id, 0, 0, sw, sh // 2, True)
+        elif side == 'maximize':
+            win32gui.ShowWindow(window.id, win32con.SW_MAXIMIZE)
 
     def minimize(self, window: WindowHandle) -> None:
-        raise NotImplementedError("TODO(V2)")
+        win32gui.ShowWindow(window.id, win32con.SW_MINIMIZE)
 
     def close(self, window: WindowHandle) -> None:
-        raise NotImplementedError("TODO(V2)")
+        win32gui.PostMessage(window.id, win32con.WM_CLOSE, 0, 0)
 
     def show_desktop(self) -> None:
-        raise NotImplementedError("TODO(V2): minimize all windows")
+        win32api.keybd_event(win32con.VK_LWIN, 0, 0, 0)
+        win32api.keybd_event(ord('D'), 0, 0, 0)
+        win32api.keybd_event(ord('D'), 0, win32con.KEYEVENTF_KEYUP, 0)
+        win32api.keybd_event(win32con.VK_LWIN, 0, win32con.KEYEVENTF_KEYUP, 0)
 
     def switch_desktop(self, direction: str) -> None:
         """direction: 'left' | 'right'"""
-        raise NotImplementedError("TODO(V2): switch virtual desktop")
+        vk_dir = win32con.VK_RIGHT if direction == 'right' else win32con.VK_LEFT
+        win32api.keybd_event(win32con.VK_LCONTROL, 0, 0, 0)
+        win32api.keybd_event(win32con.VK_LWIN, 0, 0, 0)
+        win32api.keybd_event(vk_dir, 0, 0, 0)
+        win32api.keybd_event(vk_dir, 0, win32con.KEYEVENTF_KEYUP, 0)
+        win32api.keybd_event(win32con.VK_LWIN, 0, win32con.KEYEVENTF_KEYUP, 0)
+        win32api.keybd_event(win32con.VK_LCONTROL, 0, win32con.KEYEVENTF_KEYUP, 0)

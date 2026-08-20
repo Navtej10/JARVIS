@@ -22,6 +22,7 @@ import logging
 import cv2
 import time
 import numpy as np
+from collections import deque
 
 from config.settings import settings
 from tracking.hand_tracker import HandTracker
@@ -30,7 +31,9 @@ from gestures.pinch import PinchGesture
 from gestures.scroll import ScrollGesture
 from gestures.fist import FistGesture
 from gestures.point import PointGesture
-from gestures.palm import OpenPalmGesture
+from gestures.open_palm import OpenPalmGesture
+from gestures.swipe import SwipeGesture
+from gestures.grab import GrabGesture
 from interaction.cursor import VirtualCursor
 from interaction.window_manager import WindowManager
 from interaction.object_manager import ObjectManager
@@ -92,11 +95,17 @@ def build_pipeline():
     )
     
     open_palm = OpenPalmGesture(
-        hold_frames_required=3,
+        hold_frames_required=6,
         cooldown_ms=250
     )
+    
+    swipe = SwipeGesture(
+        velocity_threshold=settings.calibration.get("gesture_thresholds", {}).get("swipe_velocity_threshold", 0.8)
+    )
+    
+    grab = GrabGesture()
 
-    # TODO(V2): add SwipeGesture, GrabGesture instances here.
+    # Priority order: grab > pinch > open_palm > swipe > (others)
     # TODO(V3): construct BridgeServer(object_manager) and run it on an asyncio task
     #           alongside the synchronous tracking loop (e.g. via a thread or asyncio.run
     #           in a background thread).
@@ -114,7 +123,7 @@ def build_pipeline():
         "window_manager": window_manager,
         "object_manager": object_manager,
         "action_executor": action_executor,
-        "gestures": [pinch, scroll, fist, point, open_palm],
+        "gestures": [grab, pinch, open_palm, swipe, scroll, fist, point],
     }
 
 
@@ -127,6 +136,15 @@ def run() -> None:
     last_scroll_y = 0
     is_scrolling = False
     is_palm_open = False
+    
+    # Drag state
+    held_window = None
+    drag_anchor = None
+    palm_fired_this_hold = False
+    
+    # Flick state
+    grab_history = deque(maxlen=5)
+    flick_triggered = False
     
     # Telemetry state
     last_tracking_time = time.time()
@@ -186,10 +204,96 @@ def run() -> None:
                 cursor.move_to(screen_point)
             
             # 2. Process Gestures
+            higher_priority_held = False
             for gesture in pipeline["gestures"]:
+                if higher_priority_held:
+                    continue
+                    
                 event = gesture.update(hand, hand.timestamp_ms)
+                
+                # Check if this gesture is currently holding to skip lower-priority ones
+                if gesture._state.name == "HOLD":
+                    higher_priority_held = True
+                    
                 if event:
-                    if event.name == "fist":
+                    if event.name == "swipe":
+                        if event.state.name == "START":
+                            window_manager = pipeline["window_manager"]
+                            window_manager.switch_desktop(event.payload["direction"])
+                            
+                    elif event.name == "grab":
+                        window_manager = pipeline["window_manager"]
+                        if event.state.name == "START":
+                            held_window = window_manager.get_focused_window()
+                            if held_window:
+                                drag_anchor = processor.to_screen_point(hand.index_tip)
+                                logger.info(f"Grabbed window: {held_window.title}")
+                                grab_history.clear()
+                                flick_triggered = False
+                        elif event.state.name == "HOLD" and held_window:
+                            # 1. Flick Detection
+                            if not flick_triggered:
+                                grab_history.append((hand.wrist.x, hand.wrist.y, hand.timestamp_ms))
+                                if len(grab_history) == grab_history.maxlen:
+                                    dt = (grab_history[-1][2] - grab_history[0][2]) / 1000.0
+                                    if dt > 0:
+                                        vx = (grab_history[-1][0] - grab_history[0][0]) / dt
+                                        vy = (grab_history[-1][1] - grab_history[0][1]) / dt
+                                        
+                                        if abs(vx) > 0.8 or abs(vy) > 0.8:
+                                            logger.info(f"Flick detected! vx={vx:.2f}, vy={vy:.2f}")
+                                            flick_triggered = True
+                                            drag_anchor = None  # Stop dragging after a flick
+                                            
+                                            if abs(vx) > abs(vy):
+                                                # MediaPipe X is mirrored by default in many setups, so vx > 0 is often physical Left.
+                                                # If it feels backwards, we can swap these.
+                                                if vx < 0:
+                                                    logger.info("Flick Right -> Snap Right")
+                                                    window_manager.snap_window(held_window, 'right')
+                                                else:
+                                                    logger.info("Flick Left -> Snap Left")
+                                                    window_manager.snap_window(held_window, 'left')
+                                            else:
+                                                if vy < 0: # Y decreases upwards
+                                                    logger.info("Flick Up -> Maximize")
+                                                    window_manager.snap_window(held_window, 'maximize')
+                                                else:
+                                                    logger.info("Flick Down -> Minimize")
+                                                    window_manager.minimize(held_window)
+                                            continue
+                            
+                            # 2. Drag Logic
+                            if drag_anchor:
+                                current_pt = processor.to_screen_point(hand.index_tip)
+                                dx = int(current_pt.x - drag_anchor.x)
+                                dy = int(current_pt.y - drag_anchor.y)
+                                
+                                # Distance threshold (5px) to prevent lag from OS-level MoveWindow spam
+                                if abs(dx) > 5 or abs(dy) > 5:
+                                    window_manager.move_window(held_window, dx, dy)
+                                    drag_anchor = current_pt
+                        elif event.state.name == "RELEASE":
+                            if held_window:
+                                logger.info(f"Released window: {held_window.title}")
+                                held_window = None
+                                drag_anchor = None
+                                flick_triggered = False
+                                
+                    elif event.name == "open_palm":
+                        window_manager = pipeline["window_manager"]
+                        if event.state.name == "START":
+                            palm_fired_this_hold = False
+                            logger.info("[PALM] Open palm started, pausing cursor")
+                            is_palm_open = True
+                        elif event.state.name == "HOLD" and not palm_fired_this_hold:
+                            window_manager.show_desktop()
+                            palm_fired_this_hold = True
+                        elif event.state.name == "RELEASE":
+                            logger.info("[PALM] Open palm ended, resuming cursor")
+                            is_palm_open = False
+                            
+                    elif event.name == "fist":
                         if event.state.name == "START":
                             cursor.set_enabled(not cursor.enabled)
                             logger.info("Kill Switch Toggled. Cursor Enabled: %s", cursor.enabled)
@@ -218,14 +322,6 @@ def run() -> None:
                             logger.info("[POINT] Pointing started")
                         elif event.state.name == "RELEASE":
                             logger.info("[POINT] Pointing ended")
-                            
-                    elif event.name == "open_palm":
-                        if event.state.name == "START":
-                            logger.info("[PALM] Open palm started, pausing cursor")
-                            is_palm_open = True
-                        elif event.state.name == "RELEASE":
-                            logger.info("[PALM] Open palm ended, resuming cursor")
-                            is_palm_open = False
                                 
     except KeyboardInterrupt:
         logger.info("Keyboard interrupt received. Shutting down...")

@@ -9,6 +9,10 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
 from tracking.hand_tracker import HandTracker
 from tracking.landmark_processor import LandmarkProcessor
 from gestures.pinch import PinchGesture
+from gestures.swipe import SwipeGesture
+from gestures.open_palm import OpenPalmGesture
+from gestures.grab import GrabGesture
+from interaction.window_manager import WindowManager
 
 import json
 
@@ -29,6 +33,16 @@ def main():
     processor = LandmarkProcessor(calibration=calib, screen_width=screen_width, screen_height=screen_height)
     
     pinch_detector = PinchGesture(distance_threshold=calib.get("gesture_thresholds", {}).get("pinch_distance_threshold", 0.045))
+    swipe_detector = SwipeGesture(velocity_threshold=calib.get("gesture_thresholds", {}).get("swipe_velocity_threshold", 0.8))
+    open_palm_detector = OpenPalmGesture(hold_frames_required=20)
+    grab_detector = GrabGesture()
+    
+    wm = WindowManager()
+    palm_fired_this_hold = False
+    
+    # State for window dragging
+    held_window = None
+    drag_anchor = None
     
     mp_drawing = mp.solutions.drawing_utils
     mp_hands = mp.solutions.hands
@@ -58,6 +72,45 @@ def main():
             event = pinch_detector.update(hf, hf.timestamp_ms)
             if event:
                 print(f"\n---> GESTURE EVENT: {event.name.upper()} | State: {event.state.name} <---")
+                
+            swipe_event = swipe_detector.update(hf, hf.timestamp_ms)
+            if swipe_event:
+                dir_str = swipe_event.payload.get('direction')
+                print(f"\n---> GESTURE EVENT: {swipe_event.name.upper()} | State: {swipe_event.state.name} | Dir: {dir_str} <---")
+                if swipe_event.state.name == "START":
+                    wm.switch_desktop(dir_str)
+
+            palm_event = open_palm_detector.update(hf, hf.timestamp_ms)
+            if palm_event:
+                print(f"\n---> GESTURE EVENT: {palm_event.name.upper()} | State: {palm_event.state.name} <---")
+                if palm_event.state.name == "START":
+                    palm_fired_this_hold = False
+                elif palm_event.state.name == "HOLD" and not palm_fired_this_hold:
+                    print("Show Desktop triggered!")
+                    wm.show_desktop()
+                    palm_fired_this_hold = True
+
+            grab_event = grab_detector.update(hf, hf.timestamp_ms)
+            if grab_event:
+                print(f"\n---> GESTURE EVENT: {grab_event.name.upper()} | State: {grab_event.state.name} <---")
+                if grab_event.state.name == "START":
+                    held_window = wm.get_focused_window()
+                    if held_window:
+                        drag_anchor = processor.to_screen_point(hf.index_tip)
+                        print(f"Grabbed window: {held_window.title}")
+                elif grab_event.state.name == "HOLD" and held_window and drag_anchor:
+                    current_pt = processor.to_screen_point(hf.index_tip)
+                    dx = int(current_pt.x - drag_anchor.x)
+                    dy = int(current_pt.y - drag_anchor.y)
+                    # Only move if there is a delta to avoid spamming the OS
+                    if dx != 0 or dy != 0:
+                        wm.move_window(held_window, dx, dy)
+                        drag_anchor = current_pt
+                elif grab_event.state.name == "RELEASE":
+                    if held_window:
+                        print(f"Released window: {held_window.title}")
+                        held_window = None
+                        drag_anchor = None
             
             # Optional: draw the smoothed screen point as a distinct circle on the frame
             # (Mapping back to frame coordinates to visualize the cursor position)

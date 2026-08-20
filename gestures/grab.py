@@ -11,14 +11,24 @@ from __future__ import annotations
 
 from gestures.gesture_state_machine import GestureStateMachine
 from tracking.hand_tracker import HandFrame
+from gestures.utils import is_finger_extended
 
 
 class GrabGesture(GestureStateMachine):
     name = "grab"
 
     def _is_condition_met(self, hand_frame: HandFrame) -> bool:
-        raise NotImplementedError(
-            "TODO(V2): for each of the 4 non-thumb fingers, compare fingertip-to-wrist "
-            "distance vs knuckle-to-wrist distance; if fingertip is closer for all 4, "
-            "the hand is a closed fist"
-        )
+        # Check index (mcp: 5, tip: 8)
+        if is_finger_extended(hand_frame, 5, 8, threshold=1.0):
+            return False
+        # Check middle (mcp: 9, tip: 12)
+        if is_finger_extended(hand_frame, 9, 12, threshold=1.0):
+            return False
+        # Check ring (mcp: 13, tip: 16)
+        if is_finger_extended(hand_frame, 13, 16, threshold=1.0):
+            return False
+        # Check pinky (mcp: 17, tip: 20)
+        if is_finger_extended(hand_frame, 17, 20, threshold=1.0):
+            return False
+            
+        return True

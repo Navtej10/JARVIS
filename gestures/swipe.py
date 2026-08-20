@@ -11,8 +11,9 @@ the gesture's cooldown so one swipe doesn't refire mid-motion).
 from __future__ import annotations
 
 from collections import deque
+from typing import Optional
 
-from gestures.gesture_state_machine import GestureStateMachine
+from gestures.gesture_state_machine import GestureStateMachine, GestureEvent, GestureState
 from tracking.hand_tracker import HandFrame
 
 
@@ -23,14 +24,46 @@ class SwipeGesture(GestureStateMachine):
         super().__init__(**kwargs)
         self.velocity_threshold = velocity_threshold
         self._history: deque[tuple[float, float]] = deque(maxlen=window_size)  # (x, timestamp_ms)
+        self._recent_velocity = 0.0
 
     def _is_condition_met(self, hand_frame: HandFrame) -> bool:
-        raise NotImplementedError(
-            "TODO(V2): push (wrist.x, timestamp) into self._history, compute "
-            "velocity across the window, return True if it exceeds "
-            "self.velocity_threshold in either direction"
-        )
+        wrist_x = hand_frame.wrist.x
+        ts = hand_frame.timestamp_ms
+        self._history.append((wrist_x, ts))
+        
+        if len(self._history) < self._history.maxlen:
+            return False
+            
+        dx = self._history[-1][0] - self._history[0][0]
+        dt = (self._history[-1][1] - self._history[0][1]) / 1000.0  # seconds
+        
+        if dt <= 0:
+            return False
+            
+        velocity = dx / dt
+        if abs(velocity) > self.velocity_threshold:
+            self._recent_velocity = velocity
+            return True
+            
+        return False
 
     def direction(self) -> str:
         """Returns 'left' or 'right' based on the sign of the recent velocity."""
-        raise NotImplementedError("TODO(V2): derive direction from self._history")
+        return "left" if self._recent_velocity < 0 else "right"
+
+    def update(self, hand_frame: HandFrame, now_ms: float) -> Optional[GestureEvent]:
+        if now_ms - self._last_release_ms < self.cooldown_ms:
+            return None
+            
+        if self._is_condition_met(hand_frame):
+            self._last_release_ms = now_ms
+            self._history.clear()
+            return GestureEvent(
+                self.name, 
+                GestureState.START, 
+                hand_frame, 
+                now_ms, 
+                payload={"direction": self.direction()}
+            )
+            
+        return None
