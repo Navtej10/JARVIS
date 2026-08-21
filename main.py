@@ -52,6 +52,25 @@ from interaction.action_executor import ActionExecutor
 # V3+ (async, run alongside the main loop)
 # from bridge.websocket_server import BridgeServer
 
+class GestureArbiter:
+    """Cross-gesture conflict suppression. Lives here, not inside the gesture
+    classes, so each GestureStateMachine stays simple and independently
+    testable — only the orchestrator needs to know these two conflict."""
+    def __init__(self, conflicts: dict[str, list[str]], cooldown_ms: float = 600.0):
+        self.conflicts = conflicts
+        self.cooldown_ms = cooldown_ms
+        self._last_fired: dict[str, float] = {}
+
+    def allow(self, gesture_name: str, now_ms: float) -> bool:
+        for other in self.conflicts.get(gesture_name, []):
+            last = self._last_fired.get(other)
+            if last is not None and (now_ms - last) < self.cooldown_ms:
+                return False
+        return True
+
+    def record_fired(self, gesture_name: str, now_ms: float) -> None:
+        self._last_fired[gesture_name] = now_ms
+
 VERSION = 1  # bump as you progress through the roadmap; gates which modules get wired in below
 
 logging.basicConfig(level=settings.log_level)
@@ -95,12 +114,13 @@ def build_pipeline():
     )
     
     open_palm = OpenPalmGesture(
-        hold_frames_required=6,
+        hold_frames_required=20,
         cooldown_ms=250
     )
     
     swipe = SwipeGesture(
-        velocity_threshold=settings.calibration.get("gesture_thresholds", {}).get("swipe_velocity_threshold", 0.8)
+        velocity_threshold=settings.calibration.get("gesture_thresholds", {}).get("swipe_velocity_threshold", 0.7),
+        window_ms=250.0
     )
     
     grab = GrabGesture()
@@ -123,7 +143,7 @@ def build_pipeline():
         "window_manager": window_manager,
         "object_manager": object_manager,
         "action_executor": action_executor,
-        "gestures": [grab, pinch, open_palm, swipe, scroll, fist, point],
+        "gestures": [grab, pinch, swipe, open_palm, scroll, fist, point],
     }
 
 
@@ -149,6 +169,8 @@ def run() -> None:
     # Telemetry state
     last_tracking_time = time.time()
     tracking_dropped = False
+
+    arbiter = GestureArbiter(conflicts={"open_palm": ["swipe"], "swipe": ["open_palm"]})
 
     cv2.namedWindow("Stark Status", cv2.WINDOW_NORMAL)
     cv2.resizeWindow("Stark Status", 400, 150)
@@ -218,6 +240,10 @@ def run() -> None:
                 if event:
                     if event.name == "swipe":
                         if event.state.name == "START":
+                            if not arbiter.allow(event.name, hand.timestamp_ms):
+                                continue
+                            arbiter.record_fired(event.name, hand.timestamp_ms)
+                            
                             window_manager = pipeline["window_manager"]
                             window_manager.switch_desktop(event.payload["direction"])
                             
@@ -226,7 +252,7 @@ def run() -> None:
                         if event.state.name == "START":
                             held_window = window_manager.get_focused_window()
                             if held_window:
-                                drag_anchor = processor.to_screen_point(hand.index_tip)
+                                drag_anchor = processor.to_screen_point(hand.wrist)
                                 logger.info(f"Grabbed window: {held_window.title}")
                                 grab_history.clear()
                                 flick_triggered = False
@@ -265,7 +291,7 @@ def run() -> None:
                             
                             # 2. Drag Logic
                             if drag_anchor:
-                                current_pt = processor.to_screen_point(hand.index_tip)
+                                current_pt = processor.to_screen_point(hand.wrist)
                                 dx = int(current_pt.x - drag_anchor.x)
                                 dy = int(current_pt.y - drag_anchor.y)
                                 
@@ -287,6 +313,10 @@ def run() -> None:
                             logger.info("[PALM] Open palm started, pausing cursor")
                             is_palm_open = True
                         elif event.state.name == "HOLD" and not palm_fired_this_hold:
+                            if not arbiter.allow(event.name, hand.timestamp_ms):
+                                continue
+                            arbiter.record_fired(event.name, hand.timestamp_ms)
+                            
                             window_manager.show_desktop()
                             palm_fired_this_hold = True
                         elif event.state.name == "RELEASE":
