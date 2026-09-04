@@ -38,6 +38,8 @@ from interaction.cursor import VirtualCursor
 from interaction.window_manager import WindowManager
 from interaction.object_manager import ObjectManager
 from interaction.action_executor import ActionExecutor
+from interaction.keyboard import VirtualKeyboard
+from gestures.double_pinch_controller import DoublePinchAltTabController
 
 # V5+
 # from voice.speech_to_text import SpeechToText
@@ -86,14 +88,23 @@ def build_pipeline():
         screen_height=settings.calibration.get("screen", {}).get("height", 1080),
     )
     cursor = VirtualCursor()
+    virtual_keyboard = VirtualKeyboard()
     window_manager = WindowManager()
     object_manager = ObjectManager()
     action_executor = ActionExecutor(cursor, window_manager, object_manager)
+    gesture_thresholds = settings.calibration.get("gesture_thresholds", {})
+    
+    double_pinch_controller = DoublePinchAltTabController(
+        cursor, virtual_keyboard, 
+        double_pinch_window_ms=400.0,
+        drag_threshold_px=gesture_thresholds.get("drag_threshold_px", 15.0),
+        pinch_max_click_duration_ms=gesture_thresholds.get("pinch_max_click_duration_ms", 500.0)
+    )
 
     pinch = PinchGesture(
-        distance_threshold=settings.calibration.get("gesture_thresholds", {}).get("pinch_distance_threshold", 0.20),
-        hold_frames_required=settings.calibration.get("gesture_thresholds", {}).get("pinch_hold_frames", 3),
-        cooldown_ms=settings.calibration.get("gesture_thresholds", {}).get("gesture_cooldown_ms", 250),
+        distance_threshold=gesture_thresholds.get("pinch_distance_threshold", 0.20),
+        hold_frames_required=gesture_thresholds.get("pinch_hold_frames", 3),
+        cooldown_ms=0,  # 0ms so rapid double-pinches aren't ignored by the state machine
     )
     
     scroll = ScrollGesture(
@@ -128,7 +139,7 @@ def build_pipeline():
     # Priority order: grab > pinch > open_palm > swipe > (others)
     # TODO(V3): construct BridgeServer(object_manager) and run it on an asyncio task
     #           alongside the synchronous tracking loop (e.g. via a thread or asyncio.run
-    #           in a background thread).
+    #           in a background thread).f
     # TODO(V4): add TwoHandScaleGesture, RotateGesture (requires max_hands=2 above).
     # TODO(V5): construct SpeechToText, IntentParser(settings.anthropic_api_key),
     #           PointingContext, ActionPlanner(action_executor); wire push-to-talk
@@ -144,6 +155,8 @@ def build_pipeline():
         "object_manager": object_manager,
         "action_executor": action_executor,
         "gestures": [grab, pinch, swipe, open_palm, scroll, fist, point],
+        "virtual_keyboard": virtual_keyboard,
+        "double_pinch_controller": double_pinch_controller,
     }
 
 
@@ -152,10 +165,13 @@ def run() -> None:
     pipeline = build_pipeline()
     cursor = pipeline["cursor"]
     processor = pipeline["landmark_processor"]
+    virtual_keyboard = pipeline["virtual_keyboard"]
+    double_pinch_controller = pipeline["double_pinch_controller"]
     
     last_scroll_y = 0
     is_scrolling = False
     is_palm_open = False
+    is_grabbing = False
     
     # Drag state
     held_window = None
@@ -209,6 +225,9 @@ def run() -> None:
                 
             # --- Telemetry: Dropped Tracking ---
             now = time.time()
+            current_time_ms = now * 1000.0
+            double_pinch_controller.tick(current_time_ms)
+            
             if not hand_frames:
                 if not tracking_dropped and (now - last_tracking_time) > 0.15:
                     logger.warning("[TRACKING DROPPED] Hand lost for > 150ms")
@@ -222,8 +241,12 @@ def run() -> None:
             
             # 1. Update Cursor Position
             screen_point = processor.to_screen_point(hand.index_tip)
-            if not is_scrolling and not is_palm_open:
-                cursor.move_to(screen_point)
+            
+            # Allow pinch controller to lock the cursor to the pinch anchor
+            effective_screen_point = double_pinch_controller.get_effective_cursor_position(screen_point)
+            
+            if not is_scrolling and not is_palm_open and not is_grabbing:
+                cursor.move_to(effective_screen_point)
             
             # 2. Process Gestures
             higher_priority_held = False
@@ -250,6 +273,7 @@ def run() -> None:
                     elif event.name == "grab":
                         window_manager = pipeline["window_manager"]
                         if event.state.name == "START":
+                            is_grabbing = True
                             held_window = window_manager.get_focused_window()
                             if held_window:
                                 drag_anchor = processor.to_screen_point(hand.wrist)
@@ -300,6 +324,7 @@ def run() -> None:
                                     window_manager.move_window(held_window, dx, dy)
                                     drag_anchor = current_pt
                         elif event.state.name == "RELEASE":
+                            is_grabbing = False
                             if held_window:
                                 logger.info(f"Released window: {held_window.title}")
                                 held_window = None
@@ -327,13 +352,11 @@ def run() -> None:
                         if event.state.name == "START":
                             cursor.set_enabled(not cursor.enabled)
                             logger.info("Kill Switch Toggled. Cursor Enabled: %s", cursor.enabled)
+                            if not cursor.enabled:
+                                virtual_keyboard.force_release_all()
                             
                     elif event.name == "pinch":
-                        if event.state.name == "START":
-                            logger.info("[CLICK EVENT] Pinch START at (%d, %d)", screen_point.x, screen_point.y)
-                            cursor.mouse_down()
-                        elif event.state.name == "RELEASE":
-                            cursor.mouse_up()
+                        double_pinch_controller.handle_pinch_event(event, screen_point)
                             
                     elif event.name == "scroll":
                         if event.state.name == "START":
@@ -357,6 +380,7 @@ def run() -> None:
         logger.info("Keyboard interrupt received. Shutting down...")
     finally:
         logger.info("Emergency disabling virtual cursor.")
+        virtual_keyboard.force_release_all()
         cursor.set_enabled(False)
         cv2.destroyAllWindows()
 
