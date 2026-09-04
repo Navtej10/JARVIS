@@ -1,13 +1,12 @@
 """
-gestures/grab.py  (V2, extended in V3)
+gestures/grab.py
 
-Closed fist -> grab a window (V2) or a spatial UI panel (V3).
+Closed fist -> grab a window.
 Fist + move -> move the grabbed target; release fist -> drop it.
-
-Detection: all four non-thumb fingertips curled toward the palm (fingertip
-landmarks closer to the wrist than their corresponding knuckle landmarks).
 """
 from __future__ import annotations
+
+import math
 
 from gestures.gesture_state_machine import GestureStateMachine
 from tracking.hand_tracker import HandFrame
@@ -17,18 +16,41 @@ from gestures.utils import is_finger_extended
 class GrabGesture(GestureStateMachine):
     name = "grab"
 
+    def __init__(self, distance_threshold: float = 0.8, **kwargs):
+        super().__init__(**kwargs)
+        self.distance_threshold = distance_threshold
+
     def _is_condition_met(self, hand_frame: HandFrame) -> bool:
-        # Check index (mcp: 5, tip: 8)
-        if is_finger_extended(hand_frame, 5, 8, threshold=1.0):
+        wrist = hand_frame.wrist
+        middle_knuckle = hand_frame.landmarks[9]
+        
+        # Calculate reference distance (wrist to middle knuckle)
+        ref_dist = math.dist((wrist.x, wrist.y, wrist.z), (middle_knuckle.x, middle_knuckle.y, middle_knuckle.z))
+        if ref_dist == 0:
             return False
-        # Check middle (mcp: 9, tip: 12)
-        if is_finger_extended(hand_frame, 9, 12, threshold=1.0):
+            
+        # Get fingertips
+        index_tip = hand_frame.index_tip
+        middle_tip = hand_frame.landmarks[12]
+        ring_tip = hand_frame.landmarks[16]
+        pinky_tip = hand_frame.landmarks[20]
+        
+        # Calculate distances from wrist to fingertips
+        d1 = math.dist((wrist.x, wrist.y, wrist.z), (index_tip.x, index_tip.y, index_tip.z))
+        d2 = math.dist((wrist.x, wrist.y, wrist.z), (middle_tip.x, middle_tip.y, middle_tip.z))
+        d3 = math.dist((wrist.x, wrist.y, wrist.z), (ring_tip.x, ring_tip.y, ring_tip.z))
+        d4 = math.dist((wrist.x, wrist.y, wrist.z), (pinky_tip.x, pinky_tip.y, pinky_tip.z))
+        
+        avg_dist = (d1 + d2 + d3 + d4) / 4.0
+        normalized_avg = avg_dist / ref_dist
+        
+        # An open hand typically has normalized_avg > 2.0
+        # A closed fist usually has normalized_avg < 1.2
+        if normalized_avg >= self.distance_threshold:
             return False
-        # Check ring (mcp: 13, tip: 16)
-        if is_finger_extended(hand_frame, 13, 16, threshold=1.0):
-            return False
-        # Check pinky (mcp: 17, tip: 20)
-        if is_finger_extended(hand_frame, 17, 20, threshold=1.0):
+            
+        # To distinguish from a POINT gesture or PINCH, ensure index finger is not explicitly extended
+        if is_finger_extended(hand_frame, 5, 8, threshold=1.2):
             return False
             
         return True

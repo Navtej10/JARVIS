@@ -29,7 +29,6 @@ from tracking.hand_tracker import HandTracker
 from tracking.landmark_processor import LandmarkProcessor
 from gestures.pinch import PinchGesture
 from gestures.scroll import ScrollGesture
-from gestures.fist import FistGesture
 from gestures.point import PointGesture
 from gestures.open_palm import OpenPalmGesture
 from gestures.swipe import SwipeGesture
@@ -113,12 +112,6 @@ def build_pipeline():
         cooldown_ms=100
     )
     
-    fist = FistGesture(
-        distance_threshold=0.8,
-        hold_frames_required=60, # ~2 seconds at 30 fps
-        cooldown_ms=1000
-    )
-    
     point = PointGesture(
         hold_frames_required=3,
         cooldown_ms=250
@@ -134,7 +127,11 @@ def build_pipeline():
         window_ms=250.0
     )
     
-    grab = GrabGesture()
+    grab = GrabGesture(
+        distance_threshold=0.8,
+        hold_frames_required=8, # ~250ms debounce
+        cooldown_ms=250
+    )
 
     # Priority order: grab > pinch > open_palm > swipe > (others)
     # TODO(V3): construct BridgeServer(object_manager) and run it on an asyncio task
@@ -154,7 +151,7 @@ def build_pipeline():
         "window_manager": window_manager,
         "object_manager": object_manager,
         "action_executor": action_executor,
-        "gestures": [grab, pinch, swipe, open_palm, scroll, fist, point],
+        "gestures": [grab, pinch, swipe, open_palm, scroll, point],
         "virtual_keyboard": virtual_keyboard,
         "double_pinch_controller": double_pinch_controller,
     }
@@ -347,13 +344,6 @@ def run() -> None:
                         elif event.state.name == "RELEASE":
                             logger.info("[PALM] Open palm ended, resuming cursor")
                             is_palm_open = False
-                            
-                    elif event.name == "fist":
-                        if event.state.name == "START":
-                            cursor.set_enabled(not cursor.enabled)
-                            logger.info("Kill Switch Toggled. Cursor Enabled: %s", cursor.enabled)
-                            if not cursor.enabled:
-                                virtual_keyboard.force_release_all()
                             
                     elif event.name == "pinch":
                         double_pinch_controller.handle_pinch_event(event, screen_point)
