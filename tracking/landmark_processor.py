@@ -94,7 +94,7 @@ class LandmarkProcessor:
         
         self._transform_matrix = cv2.getPerspectiveTransform(src_points, dst_points)
 
-    def to_screen_point(self, landmark: Landmark) -> ScreenPoint:
+    def to_screen_point(self, landmark: Landmark, apply_internal_smoothing: bool = True) -> ScreenPoint:
         """
         Full pipeline: smooth -> map hand-space to screen-space via calibration
         corners -> apply dead-zone -> apply acceleration curve.
@@ -104,7 +104,10 @@ class LandmarkProcessor:
         accel_curve = cursor_calib.get("acceleration_curve", "quadratic")
         
         # 1. Smooth
-        smooth_x, smooth_y = self.smoother.update(landmark.x, landmark.y)
+        if apply_internal_smoothing:
+            smooth_x, smooth_y = self.smoother.update(landmark.x, landmark.y)
+        else:
+            smooth_x, smooth_y = landmark.x, landmark.y
         
         # 2. Transform using calibration matrix
         if self._transform_matrix is not None:

@@ -26,6 +26,7 @@ from collections import deque
 
 from config.settings import settings
 from tracking.hand_tracker import HandTracker
+from tracking.one_euro_filter import LandmarkFilter
 from tracking.landmark_processor import LandmarkProcessor
 from gestures.pinch import PinchGesture
 from gestures.scroll import ScrollGesture
@@ -165,6 +166,15 @@ def run() -> None:
     virtual_keyboard = pipeline["virtual_keyboard"]
     double_pinch_controller = pipeline["double_pinch_controller"]
     
+    smoothing_config = settings.calibration.get("smoothing", {})
+    use_one_euro = smoothing_config.get("use_one_euro", False)
+    euro_config = smoothing_config.get("one_euro", {})
+    cursor_euro = euro_config.get("cursor", {"mincutoff": 1.0, "beta": 0.7})
+    gestures_euro = euro_config.get("gestures", {"mincutoff": 0.5, "beta": 0.1})
+    
+    cursor_filter = LandmarkFilter(num_landmarks=1, freq=30.0, mincutoff=cursor_euro["mincutoff"], beta=cursor_euro["beta"])
+    gesture_filter = LandmarkFilter(num_landmarks=21, freq=30.0, mincutoff=gestures_euro["mincutoff"], beta=gestures_euro["beta"])
+    
     last_scroll_y = 0
     is_scrolling = False
     is_palm_open = False
@@ -229,15 +239,38 @@ def run() -> None:
                 if not tracking_dropped and (now - last_tracking_time) > 0.15:
                     logger.warning("[TRACKING DROPPED] Hand lost for > 150ms")
                     tracking_dropped = True
+                    cursor_filter.reset()
+                    gesture_filter.reset()
                 continue
             
             last_tracking_time = now
             tracking_dropped = False
                 
             hand = hand_frames[0]
+            timestamp_sec = hand.timestamp_ms / 1000.0
+            
+            apply_internal_smoothing = True
+            cursor_lm = hand.index_tip
+            
+            if use_one_euro:
+                raw_lms = [(lm.x, lm.y) for lm in hand.landmarks]
+                
+                # Filter cursor (index tip = landmark 8)
+                smoothed_cursor = cursor_filter.filter([raw_lms[8]], t=timestamp_sec)[0]
+                import copy
+                cursor_lm = copy.copy(hand.index_tip)
+                cursor_lm.x, cursor_lm.y = smoothed_cursor
+                
+                # Filter all for gestures
+                smoothed_all = gesture_filter.filter(raw_lms, t=timestamp_sec)
+                for i, (sx, sy) in enumerate(smoothed_all):
+                    hand.landmarks[i].x = sx
+                    hand.landmarks[i].y = sy
+                    
+                apply_internal_smoothing = False
             
             # 1. Update Cursor Position
-            screen_point = processor.to_screen_point(hand.index_tip)
+            screen_point = processor.to_screen_point(cursor_lm, apply_internal_smoothing=apply_internal_smoothing)
             
             # Allow pinch controller to lock the cursor to the pinch anchor
             effective_screen_point = double_pinch_controller.get_effective_cursor_position(screen_point)
