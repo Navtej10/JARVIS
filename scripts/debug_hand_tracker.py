@@ -32,10 +32,10 @@ def main():
     screen_height = calib.get("screen", {}).get("height", 1080)
     processor = LandmarkProcessor(calibration=calib, screen_width=screen_width, screen_height=screen_height)
     
-    pinch_detector = PinchGesture(distance_threshold=calib.get("gesture_thresholds", {}).get("pinch_distance_threshold", 0.045))
+    pinch_detector = PinchGesture(engage_threshold=calib.get("gesture_thresholds", {}).get("pinch_distance_threshold", 0.045), release_threshold=0.065)
     swipe_detector = SwipeGesture(velocity_threshold=calib.get("gesture_thresholds", {}).get("swipe_velocity_threshold", 0.8))
     open_palm_detector = OpenPalmGesture(hold_frames_required=20)
-    grab_detector = GrabGesture()
+    grab_detector = GrabGesture(engage_threshold=0.8, release_threshold=1.0)
     
     wm = WindowManager()
     palm_fired_this_hold = False

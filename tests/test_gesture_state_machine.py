@@ -89,3 +89,46 @@ def test_gesture_cooldown():
     evt = gesture.update(hand, 150.0) # Frame 2
     assert evt is not None
     assert evt.state == GestureState.START
+
+class DummyHysteresisGesture(GestureStateMachine):
+    name = "hysteresis_dummy"
+    
+    def __init__(self, engage_threshold=0.5, release_threshold=0.7, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.engage_threshold = engage_threshold
+        self.release_threshold = release_threshold
+        self.current_value = 0.0
+        
+    def _is_condition_met(self, hand_frame: HandFrame) -> bool:
+        threshold = self.release_threshold if self._state in (GestureState.HOLD, GestureState.START) else self.engage_threshold
+        return self.current_value < threshold
+
+def test_gesture_hysteresis():
+    # Test single-threshold "flicker"
+    flicker_gesture = DummyHysteresisGesture(engage_threshold=0.5, release_threshold=0.5, hold_frames_required=1, cooldown_ms=0)
+    # Test double-threshold hysteresis
+    smooth_gesture = DummyHysteresisGesture(engage_threshold=0.5, release_threshold=0.7, hold_frames_required=1, cooldown_ms=0)
+    
+    hand = create_dummy_hand()
+    
+    # Both start at 0.4 (< 0.5)
+    flicker_gesture.current_value = 0.4
+    smooth_gesture.current_value = 0.4
+    
+    assert flicker_gesture.update(hand, 10.0).state == GestureState.START
+    assert smooth_gesture.update(hand, 10.0).state == GestureState.START
+    
+    # Hand moves to boundary 0.6. Single threshold releases (0.6 >= 0.5). Hysteresis stays hold (0.6 < 0.7).
+    flicker_gesture.current_value = 0.6
+    smooth_gesture.current_value = 0.6
+    
+    assert flicker_gesture.update(hand, 20.0).state == GestureState.RELEASE
+    assert smooth_gesture.update(hand, 20.0).state == GestureState.HOLD
+    
+    # Hand moves back to 0.4. Single threshold starts again (flickers). Hysteresis stays hold.
+    flicker_gesture.current_value = 0.4
+    smooth_gesture.current_value = 0.4
+    
+    assert flicker_gesture.update(hand, 30.0).state == GestureState.START
+    assert smooth_gesture.update(hand, 30.0).state == GestureState.HOLD
+

@@ -35,7 +35,8 @@
     "acceleration_curve": "quadratic"
   },
   "gesture_thresholds": {
-    "pinch_distance_threshold": 0.2,
+    "pinch_engage_threshold": 0.2,
+    "pinch_release_threshold": 0.25,
     "pinch_hold_frames": 3,
     "detection_confidence_min": 0.7,
     "gesture_cooldown_ms": 250

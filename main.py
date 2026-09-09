@@ -102,7 +102,8 @@ def build_pipeline():
     )
 
     pinch = PinchGesture(
-        distance_threshold=gesture_thresholds.get("pinch_distance_threshold", 0.20),
+        engage_threshold=gesture_thresholds.get("pinch_engage_threshold", gesture_thresholds.get("pinch_distance_threshold", 0.20)),
+        release_threshold=gesture_thresholds.get("pinch_release_threshold", 0.25),
         hold_frames_required=gesture_thresholds.get("pinch_hold_frames", 3),
         cooldown_ms=0,  # 0ms so rapid double-pinches aren't ignored by the state machine
     )
@@ -129,7 +130,8 @@ def build_pipeline():
     )
     
     grab = GrabGesture(
-        distance_threshold=0.8,
+        engage_threshold=0.8,
+        release_threshold=1.0,
         hold_frames_required=8, # ~250ms debounce
         cooldown_ms=250
     )

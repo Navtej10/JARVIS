@@ -16,6 +16,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
+import math
+import logging
 import time
 import cv2
 import mediapipe as mp
@@ -119,6 +121,21 @@ class HandTracker:
                 h_enum = Handedness.LEFT if label.lower() == "left" else Handedness.RIGHT
                 
                 landmarks = [Landmark(x=lm.x, y=lm.y, z=lm.z) for lm in hand_landmarks.landmark]
+                
+                # Hallucination filter: discard hands with impossible aspect ratios
+                span = math.dist((landmarks[0].x, landmarks[0].y, landmarks[0].z), 
+                                 (landmarks[9].x, landmarks[9].y, landmarks[9].z))
+                knuckle_row_width = math.dist((landmarks[5].x, landmarks[5].y, landmarks[5].z), 
+                                              (landmarks[17].x, landmarks[17].y, landmarks[17].z))
+                                              
+                if knuckle_row_width == 0:
+                    continue
+                    
+                aspect = span / knuckle_row_width
+                if aspect > 6.0 or aspect < 0.5:
+                    logger = logging.getLogger("stark.main")
+                    logger.debug(f"Discarding hallucinated hand frame (aspect ratio {aspect:.2f})")
+                    continue
                 
                 hand_frames.append(HandFrame(
                     handedness=h_enum,

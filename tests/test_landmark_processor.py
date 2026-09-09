@@ -9,11 +9,11 @@ TODO(V1): test LandmarkProcessor.to_screen_point() against a fixed
 """
 import pytest
 
-from tracking.landmark_processor import ExponentialSmoother
+from tracking.landmark_processor import SpeedAdaptiveSmoother
 
 
 def test_exponential_smoother_converges_toward_new_value():
-    smoother = ExponentialSmoother(alpha=0.5)
+    smoother = SpeedAdaptiveSmoother(min_alpha=0.5, max_alpha=0.5)
     first = smoother.update(0.0, 0.0)
     second = smoother.update(1.0, 1.0)
     assert first == (0.0, 0.0)
