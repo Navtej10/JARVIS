@@ -35,21 +35,87 @@ class BridgeClient {
   private socket: WebSocket | null = null;
   private gestureListeners: ((msg: GestureEventMessage) => void)[] = [];
   private actionListeners: ((msg: ActionMessage) => void)[] = [];
+  
+  private reconnectBackoff = 500;
+  private messageQueue: string[] = [];
+  private isConnecting = false;
 
   connect(url: string = "ws://localhost:8765"): void {
-    throw new Error(
-      "TODO(V3): open WebSocket to `url`, wire onmessage to dispatch to " +
-        "gestureListeners/actionListeners based on message.type, and " +
-        "auto-reconnect on close."
-    );
+    if (this.socket?.readyState === WebSocket.OPEN || this.isConnecting) {
+      return;
+    }
+    
+    this.isConnecting = true;
+    console.log(`Attempting to connect to bridge at ${url}...`);
+    
+    this.socket = new WebSocket(url);
+    
+    this.socket.onopen = () => {
+      console.log("Connected to bridge server.");
+      this.isConnecting = false;
+      this.reconnectBackoff = 500; // reset backoff
+      
+      // Flush queued messages
+      if (this.messageQueue.length > 0) {
+        console.log(`Flushing ${this.messageQueue.length} queued messages...`);
+        this.messageQueue.forEach(msg => this.socket?.send(msg));
+        this.messageQueue = [];
+      }
+    };
+    
+    this.socket.onmessage = (event) => {
+      try {
+        const msg = JSON.parse(event.data);
+        if (msg.type === "gesture") {
+          this.gestureListeners.forEach(listener => listener(msg));
+        } else if (msg.type === "action") {
+          this.actionListeners.forEach(listener => listener(msg));
+        }
+      } catch (err) {
+        console.error("Failed to parse bridge message:", err);
+      }
+    };
+    
+    this.socket.onclose = () => {
+      this.socket = null;
+      this.isConnecting = false;
+      console.log(`Bridge connection closed. Reconnecting in ${this.reconnectBackoff}ms...`);
+      setTimeout(() => this.connect(url), this.reconnectBackoff);
+      
+      // Exponential backoff capped at 5000ms
+      this.reconnectBackoff = Math.min(this.reconnectBackoff * 2, 5000);
+    };
+    
+    this.socket.onerror = (err) => {
+      // The onclose handler will take care of the reconnect
+      console.error("Bridge connection error.", err);
+    };
+  }
+
+  private sendOrQueue(payload: Record<string, unknown>) {
+    const msg = JSON.stringify(payload);
+    if (this.socket?.readyState === WebSocket.OPEN) {
+      this.socket.send(msg);
+    } else {
+      this.messageQueue.push(msg);
+    }
   }
 
   registerObject(id: string, kind: string, bounds: BoundingBox, zIndex: number): void {
-    throw new Error("TODO(V3): send {type: 'register_object', id, kind, bounds, z_index: zIndex}");
+    this.sendOrQueue({
+      type: 'register_object',
+      id,
+      kind,
+      bounds,
+      z_index: zIndex
+    });
   }
 
   unregisterObject(id: string): void {
-    throw new Error("TODO(V3): send {type: 'unregister_object', id}");
+    this.sendOrQueue({
+      type: 'unregister_object',
+      id
+    });
   }
 
   onGestureEvent(listener: (msg: GestureEventMessage) => void): () => void {

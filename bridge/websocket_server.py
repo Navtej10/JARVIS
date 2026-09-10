@@ -64,16 +64,91 @@ class BridgeServer:
         self._connections = set()
 
     async def start(self) -> None:
-        raise NotImplementedError("TODO(V3): start websockets.serve(self._handle_connection, host, port)")
+        import websockets
+        import asyncio
+        logger.info(f"Starting BridgeServer on ws://{self.host}:{self.port}")
+        async with websockets.serve(self._handle_connection, self.host, self.port):
+            await asyncio.Future()  # run forever
 
     async def _handle_connection(self, websocket) -> None:
-        raise NotImplementedError(
-            "TODO(V3): register connection, loop over incoming messages, dispatch "
-            "by 'type' field (register_object / unregister_object) to self.object_manager"
-        )
+        self._connections.add(websocket)
+        logger.info(f"UI client connected. Total connections: {len(self._connections)}")
+        try:
+            async for message in websocket:
+                try:
+                    data = json.loads(message)
+                    msg_type = data.get("type")
+                    
+                    if msg_type == "register_object":
+                        from interaction.object_manager import SpatialObject, BoundingBox
+                        bounds_data = data.get("bounds", {})
+                        bounds = BoundingBox(
+                            x=bounds_data.get("x", 0),
+                            y=bounds_data.get("y", 0),
+                            width=bounds_data.get("width", 0),
+                            height=bounds_data.get("height", 0)
+                        )
+                        obj = SpatialObject(
+                            id=data["id"],
+                            kind=data.get("kind", "panel"),
+                            bounds=bounds,
+                            z_index=data.get("z_index", 0)
+                        )
+                        self.object_manager.register_object(obj)
+                        logger.debug(f"Registered object: {obj.id}")
+                        
+                    elif msg_type == "unregister_object":
+                        obj_id = data.get("id")
+                        if obj_id:
+                            self.object_manager.unregister_object(obj_id)
+                            logger.debug(f"Unregistered object: {obj_id}")
+                            
+                except json.JSONDecodeError:
+                    logger.warning(f"Failed to decode JSON from websocket: {message}")
+                except Exception as e:
+                    logger.error(f"Error handling websocket message: {e}", exc_info=True)
+                    
+        except Exception as e:
+            logger.warning(f"Connection error or closed: {e}")
+        finally:
+            self._connections.remove(websocket)
+            logger.info(f"UI client disconnected. Total connections: {len(self._connections)}")
+            # Do NOT clear object_manager on disconnect -- reconnect tolerance
 
     async def broadcast_gesture_event(self, event) -> None:
-        raise NotImplementedError("TODO(V3): serialize GestureEvent per the schema above and send to all connections")
+        if not self._connections:
+            return
+            
+        import asyncio
+        payload = {
+            "type": "gesture",
+            "name": event.name,
+            "state": event.state.name.lower(),
+            "target": getattr(event, "target_id", None),
+            "screen_point": getattr(event, "screen_point_dict", None),
+            "timestamp_ms": event.timestamp_ms
+        }
+        
+        message = json.dumps(payload)
+        
+        # Send to all connected clients, swallow errors
+        aws = [websocket.send(message) for websocket in self._connections]
+        if aws:
+            await asyncio.gather(*aws, return_exceptions=True)
 
     async def broadcast_action(self, action) -> None:
-        raise NotImplementedError("TODO(V5): serialize Action per the schema above and send to all connections")
+        if not self._connections:
+            return
+            
+        import asyncio
+        # Minimal V5 stub, will be expanded later
+        payload = {
+            "type": "action",
+            "target": action.get("target"),
+            "intent": action.get("intent"),
+            "params": action.get("params", {})
+        }
+        message = json.dumps(payload)
+        aws = [websocket.send(message) for websocket in self._connections]
+        if aws:
+            await asyncio.gather(*aws, return_exceptions=True)

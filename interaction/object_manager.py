@@ -53,10 +53,12 @@ class ObjectManager:
         self._objects.pop(object_id, None)
 
     def hit_test(self, x: int, y: int) -> SpatialObject | None:
-        raise NotImplementedError(
-            "TODO(V3): find all registered objects whose bounds contain (x, y), "
-            "return the one with the highest z_index (topmost)"
-        )
+        topmost = None
+        for obj in self._objects.values():
+            if obj.bounds.contains(x, y):
+                if topmost is None or obj.z_index > topmost.z_index:
+                    topmost = obj
+        return topmost
 
     def resolve_target(self, x: int, y: int) -> SpatialObject | None:
         """Main entry point: gestures call this to find what the hand is pointing at."""

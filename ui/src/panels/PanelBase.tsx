@@ -33,16 +33,67 @@ type PanelBaseProps = {
   children: React.ReactNode;
 };
 
+let globalZIndexCounter = 100;
+
 export function PanelBase({ id, title, initialX, initialY, width, height, zIndex = 0, children }: PanelBaseProps) {
   const [position, setPosition] = useState({ x: initialX, y: initialY });
+  const [panelZIndex, setPanelZIndex] = useState(zIndex || globalZIndexCounter++);
   const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    // TODO(V3): bridgeClient.registerObject(id, "panel", {x: position.x, y: position.y, width, height}, zIndex)
+    if (!panelRef.current) return;
+    
+    // Use actual rendered bounds rather than logical props to capture CSS exactness
+    const rect = panelRef.current.getBoundingClientRect();
+    
+    bridgeClient.registerObject(
+      id,
+      "panel",
+      {
+        x: Math.round(rect.x),
+        y: Math.round(rect.y),
+        width: Math.round(rect.width),
+        height: Math.round(rect.height)
+      },
+      panelZIndex
+    );
+    
     return () => {
-      // TODO(V3): bridgeClient.unregisterObject(id)
+      bridgeClient.unregisterObject(id);
     };
-  }, [id, position, width, height, zIndex]);
+  }, [id, position, width, height, panelZIndex]);
+
+  // Drag state for gesture handling
+  const dragRef = useRef<{ cursor: { x: number; y: number }; pos: { x: number; y: number } } | null>(null);
+
+  useEffect(() => {
+    const unsubscribe = bridgeClient.onGestureEvent((msg) => {
+      if (msg.target !== id) return;
+
+      if (msg.name === "grab" && msg.screen_point) {
+        if (msg.state === "start") {
+          dragRef.current = { cursor: msg.screen_point, pos: position };
+          setPanelZIndex(globalZIndexCounter++); // bring to front
+        } else if (msg.state === "hold" && dragRef.current) {
+          const dx = msg.screen_point.x - dragRef.current.cursor.x;
+          const dy = msg.screen_point.y - dragRef.current.cursor.y;
+          setPosition({
+            x: dragRef.current.pos.x + dx,
+            y: dragRef.current.pos.y + dy,
+          });
+        } else if (msg.state === "release") {
+          dragRef.current = null;
+        }
+      } else if (msg.name === "pinch") {
+        if (msg.state === "start") {
+          console.log(`Panel pinched: ${id}`);
+          setPanelZIndex(globalZIndexCounter++); // bring to front
+        }
+      }
+    });
+
+    return unsubscribe;
+  }, [id, position]); // Depend on position so we get the latest when drag starts
 
   return (
     <div
@@ -54,6 +105,7 @@ export function PanelBase({ id, title, initialX, initialY, width, height, zIndex
         top: position.y,
         width,
         height,
+        zIndex: panelZIndex,
         pointerEvents: "auto",
         background: "rgba(20, 22, 30, 0.75)",
         border: "1px solid rgba(255, 255, 255, 0.12)",
