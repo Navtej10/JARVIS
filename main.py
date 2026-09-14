@@ -25,9 +25,10 @@ import numpy as np
 from collections import deque
 
 from config.settings import settings
-from tracking.hand_tracker import HandTracker
+from tracking.hand_tracker import HandTracker, Handedness
 from tracking.one_euro_filter import LandmarkFilter
 from tracking.landmark_processor import LandmarkProcessor
+from gestures.gesture_state_machine import GestureState
 from gestures.pinch import PinchGesture
 from gestures.scroll import ScrollGesture
 from gestures.point import PointGesture
@@ -40,6 +41,7 @@ from interaction.object_manager import ObjectManager
 from interaction.action_executor import ActionExecutor
 from interaction.keyboard import VirtualKeyboard
 from gestures.double_pinch_controller import DoublePinchAltTabController
+from gestures.rotate import TwoHandScaleGesture, RotateGesture, OrbitGesture
 
 # V5+
 # from voice.speech_to_text import SpeechToText
@@ -96,6 +98,7 @@ def build_pipeline():
     object_manager = ObjectManager()
     action_executor = ActionExecutor(cursor, window_manager, object_manager)
     gesture_thresholds = settings.calibration.get("gesture_thresholds", {})
+    manipulation_config = settings.calibration.get("manipulation", {})
     
     double_pinch_controller = DoublePinchAltTabController(
         cursor, virtual_keyboard, 
@@ -141,7 +144,24 @@ def build_pipeline():
 
     # Priority order: grab > pinch > open_palm > swipe > (others)
     bridge_server = BridgeServer(object_manager)
-    # TODO(V4): add TwoHandScaleGesture, RotateGesture (requires max_hands=2 above).
+    
+    two_hand_scale = TwoHandScaleGesture(
+        hold_frames_required=3,
+        cooldown_ms=250,
+        scale_snap_increment=manipulation_config.get("scale_snap_increment", 0.1)
+    )
+    
+    rotate = RotateGesture(
+        hold_frames_required=3,
+        cooldown_ms=0, # no cooldown needed
+        rotate_snap_increment_degrees=manipulation_config.get("rotate_snap_increment_degrees", 15.0)
+    )
+    
+    orbit = OrbitGesture(
+        hold_frames_required=3,
+        cooldown_ms=0
+    )
+    
     # TODO(V5): construct SpeechToText, IntentParser(settings.anthropic_api_key),
     #           PointingContext, ActionPlanner(action_executor); wire push-to-talk
     #           to trigger the voice -> intent -> action flow.
@@ -156,7 +176,8 @@ def build_pipeline():
         "object_manager": object_manager,
         "bridge_server": bridge_server,
         "action_executor": action_executor,
-        "gestures": [grab, pinch, swipe, open_palm, scroll, point],
+        "gestures": [grab, rotate, orbit, pinch, swipe, open_palm, scroll, point],
+        "two_hand_gestures": [two_hand_scale],
         "virtual_keyboard": virtual_keyboard,
         "double_pinch_controller": double_pinch_controller,
     }
@@ -199,6 +220,9 @@ def run() -> None:
     held_window = None
     held_panel = None
     pinched_panel = None
+    scaled_object = None
+    rotated_object = None
+    is_orbiting = False
     drag_anchor = None
     palm_fired_this_hold = False
     
@@ -299,6 +323,41 @@ def run() -> None:
             pipeline["object_manager"].resolve_target(int(effective_screen_point.x), int(effective_screen_point.y))
             
             # 2. Process Gestures
+            hands_dict = {h.handedness: h for h in hand_frames}
+            
+            # Process Two-Hand Gestures
+            for gesture in pipeline.get("two_hand_gestures", []):
+                event = gesture.update(hands_dict, hand.timestamp_ms)
+                if event:
+                    if event.name == "two_hand_scale":
+                        if event.state.name == "START":
+                            if Handedness.LEFT in hands_dict and Handedness.RIGHT in hands_dict:
+                                l_hand = hands_dict[Handedness.LEFT]
+                                r_hand = hands_dict[Handedness.RIGHT]
+                                l_pt = processor.to_screen_point(l_hand.index_tip, apply_internal_smoothing)
+                                r_pt = processor.to_screen_point(r_hand.index_tip, apply_internal_smoothing)
+                                mid_x = (l_pt.x + r_pt.x) / 2
+                                mid_y = (l_pt.y + r_pt.y) / 2
+                                target = pipeline["object_manager"].resolve_target(int(mid_x), int(mid_y))
+                                if target:
+                                    scaled_object = target
+                                    event.target_id = scaled_object.id
+                                    event.screen_point_dict = {"x": mid_x, "y": mid_y}
+                                    logger.info(f"Two-hand scale started on {scaled_object.id}")
+                        elif event.state.name == "HOLD":
+                            if scaled_object:
+                                event.target_id = scaled_object.id
+                                event.screen_point_dict = {"x": 0, "y": 0}
+                        elif event.state.name == "RELEASE":
+                            if scaled_object:
+                                event.target_id = scaled_object.id
+                                scaled_object = None
+
+                    if bridge_server and bridge_loop and hasattr(event, "target_id"):
+                        asyncio.run_coroutine_threadsafe(
+                            bridge_server.broadcast_gesture_event(event), bridge_loop
+                        )
+
             higher_priority_held = False
             for gesture in pipeline["gestures"]:
                 if higher_priority_held:
@@ -310,7 +369,6 @@ def run() -> None:
                 if gesture._state.name == "HOLD":
                     higher_priority_held = True
                     
-                if event:
                 if event:
                         
                     if event.name == "swipe":
@@ -326,12 +384,13 @@ def run() -> None:
                         window_manager = pipeline["window_manager"]
                         if event.state.name == "START":
                             is_grabbing = True
-                            target = pipeline["object_manager"].resolve_target(int(screen_point.x), int(screen_point.y))
+                            wrist_pt = processor.to_screen_point(hand.wrist, apply_internal_smoothing)
+                            target = pipeline["object_manager"].resolve_target(int(wrist_pt.x), int(wrist_pt.y))
                             
                             if target:
                                 held_panel = target
                                 event.target_id = held_panel.id
-                                event.screen_point_dict = {"x": screen_point.x, "y": screen_point.y}
+                                event.screen_point_dict = {"x": wrist_pt.x, "y": wrist_pt.y}
                                 logger.info(f"Grabbed panel: {held_panel.id}")
                             else:
                                 held_window = window_manager.get_focused_window()
@@ -343,8 +402,9 @@ def run() -> None:
                                     
                         elif event.state.name == "HOLD":
                             if held_panel:
+                                wrist_pt = processor.to_screen_point(hand.wrist)
                                 event.target_id = held_panel.id
-                                event.screen_point_dict = {"x": screen_point.x, "y": screen_point.y}
+                                event.screen_point_dict = {"x": wrist_pt.x, "y": wrist_pt.y}
                             elif held_window:
                                 # 1. Flick Detection
                                 if not flick_triggered:
@@ -390,8 +450,9 @@ def run() -> None:
                         elif event.state.name == "RELEASE":
                             is_grabbing = False
                             if held_panel:
+                                wrist_pt = processor.to_screen_point(hand.wrist)
                                 event.target_id = held_panel.id
-                                event.screen_point_dict = {"x": screen_point.x, "y": screen_point.y}
+                                event.screen_point_dict = {"x": wrist_pt.x, "y": wrist_pt.y}
                                 logger.info(f"Released panel: {held_panel.id}")
                                 held_panel = None
                             elif held_window:
@@ -426,6 +487,9 @@ def run() -> None:
                                 event.screen_point_dict = {"x": screen_point.x, "y": screen_point.y}
                                 logger.info(f"Pinched panel: {pinched_panel.id}")
                             else:
+                                if is_orbiting:
+                                    gesture._state = GestureState.IDLE
+                                    continue
                                 double_pinch_controller.handle_pinch_event(event, screen_point)
                         elif event.state.name == "HOLD":
                             if pinched_panel:
@@ -458,6 +522,42 @@ def run() -> None:
                             logger.info("[POINT] Pointing started")
                         elif event.state.name == "RELEASE":
                             logger.info("[POINT] Pointing ended")
+                            
+                    elif event.name == "rotate":
+                        if event.state.name == "START":
+                            target = pipeline["object_manager"].resolve_target(int(screen_point.x), int(screen_point.y))
+                            if target:
+                                rotated_object = target
+                                event.target_id = rotated_object.id
+                                event.screen_point_dict = {"x": screen_point.x, "y": screen_point.y}
+                                logger.info(f"Rotate started on {rotated_object.id}")
+                            else:
+                                gesture._state = GestureState.IDLE
+                                continue
+                        elif event.state.name == "HOLD":
+                            if rotated_object:
+                                event.target_id = rotated_object.id
+                                event.screen_point_dict = {"x": screen_point.x, "y": screen_point.y}
+                        elif event.state.name == "RELEASE":
+                            if rotated_object:
+                                event.target_id = rotated_object.id
+                                rotated_object = None
+                                
+                    elif event.name == "orbit_camera":
+                        if event.state.name == "START":
+                            target = pipeline["object_manager"].resolve_target(int(screen_point.x), int(screen_point.y))
+                            if not target:
+                                is_orbiting = True
+                                logger.info("Orbit camera started")
+                            else:
+                                gesture._state = GestureState.IDLE
+                                continue
+                        elif event.state.name == "HOLD":
+                            if is_orbiting:
+                                pass
+                        elif event.state.name == "RELEASE":
+                            if is_orbiting:
+                                is_orbiting = False
                             
                     # Post-process: Broadcast the gesture event now that it might be enriched with panel info
                     if bridge_server and bridge_loop:

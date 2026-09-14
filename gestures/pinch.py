@@ -13,7 +13,7 @@ import math
 
 from gestures.gesture_state_machine import GestureStateMachine, GestureState
 from tracking.hand_tracker import HandFrame
-from gestures.utils import is_finger_extended_by_curl
+from gestures.utils import is_finger_extended_by_curl, calculate_normalized_pinch_distance
 
 
 class PinchGesture(GestureStateMachine):
@@ -25,21 +25,12 @@ class PinchGesture(GestureStateMachine):
         self.release_threshold = release_threshold
 
     def _is_condition_met(self, hand_frame: HandFrame) -> bool:
-        thumb = hand_frame.thumb_tip
-        index = hand_frame.index_tip
-        wrist = hand_frame.wrist
-        middle_knuckle = hand_frame.landmarks[9]
-        
-        # Calculate 3D distances
-        pinch_dist = math.dist((thumb.x, thumb.y, thumb.z), (index.x, index.y, index.z))
-        ref_dist = math.dist((wrist.x, wrist.y, wrist.z), (middle_knuckle.x, middle_knuckle.y, middle_knuckle.z))
-        
-        if ref_dist == 0:
+        normalized_dist = calculate_normalized_pinch_distance(hand_frame)
+        if normalized_dist is None:
             return False
             
         threshold = self.release_threshold if self._state in (GestureState.HOLD, GestureState.START) else self.engage_threshold
         
-        normalized_dist = pinch_dist / ref_dist
         if normalized_dist >= threshold:
             return False
             

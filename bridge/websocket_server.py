@@ -129,6 +129,9 @@ class BridgeServer:
             "timestamp_ms": event.timestamp_ms
         }
         
+        if getattr(event, "payload", None) is not None:
+            payload["payload"] = event.payload
+            
         message = json.dumps(payload)
         
         # Send to all connected clients, swallow errors

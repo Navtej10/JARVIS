@@ -35,7 +35,11 @@ class WindowManager:
     def get_focused_window(self) -> WindowHandle | None:
         hwnd = win32gui.GetForegroundWindow()
         if hwnd:
-            return WindowHandle(hwnd, win32gui.GetWindowText(hwnd))
+            title = win32gui.GetWindowText(hwnd)
+            # Guard to prevent dragging the overlay window itself or empty desktop handles
+            if title and not any(overlay_name in title for overlay_name in ["Stark Interface", "Vite App", "stark-interface"]):
+                return WindowHandle(hwnd, title)
+            # If the focused window is the overlay itself (or empty), return None
         return None
 
     def move_window(self, window: WindowHandle, dx: int, dy: int) -> None:

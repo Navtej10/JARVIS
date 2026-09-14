@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
-from tracking.hand_tracker import HandFrame
+from tracking.hand_tracker import HandFrame, Handedness
 
 
 class GestureState(Enum):
@@ -98,6 +98,63 @@ class GestureStateMachine(ABC):
             self._consecutive_true_frames = 0
             if self._state in (GestureState.START, GestureState.HOLD):
                 event = GestureEvent(self.name, GestureState.RELEASE, hand_frame, now_ms)
+                self._state = GestureState.IDLE
+                self._last_release_ms = now_ms
+                return event
+                
+        return None
+
+
+@dataclass
+class TwoHandGestureEvent:
+    name: str
+    state: GestureState
+    hands: dict[Handedness, HandFrame]
+    timestamp_ms: float
+    payload: dict | None = None
+
+
+class TwoHandGestureStateMachine(ABC):
+    """
+    Base class for two-hand gesture detectors.
+    """
+
+    name: str = "unnamed_two_hand_gesture"
+
+    def __init__(self, hold_frames_required: int = 3, cooldown_ms: int = 250):
+        self.hold_frames_required = hold_frames_required
+        self.cooldown_ms = cooldown_ms
+        self._state = GestureState.IDLE
+        self._consecutive_true_frames = 0
+        self._last_release_ms: float = -float('inf')
+
+    @abstractmethod
+    def _is_condition_met(self, hands: dict[Handedness, HandFrame]) -> bool:
+        """Raw per-frame geometric test. Returns False if required hands are missing."""
+        raise NotImplementedError
+
+    def update(self, hands: dict[Handedness, HandFrame], now_ms: float) -> Optional[TwoHandGestureEvent]:
+        if self._state == GestureState.IDLE and (now_ms - self._last_release_ms < self.cooldown_ms):
+            self._consecutive_true_frames = 0
+            return None
+            
+        condition_met = self._is_condition_met(hands)
+        
+        if condition_met:
+            self._consecutive_true_frames += 1
+            if self._state == GestureState.IDLE:
+                if self._consecutive_true_frames >= self.hold_frames_required:
+                    self._state = GestureState.START
+                    return TwoHandGestureEvent(self.name, self._state, hands, now_ms)
+            elif self._state == GestureState.START:
+                self._state = GestureState.HOLD
+                return TwoHandGestureEvent(self.name, self._state, hands, now_ms)
+            elif self._state == GestureState.HOLD:
+                return TwoHandGestureEvent(self.name, self._state, hands, now_ms)
+        else:
+            self._consecutive_true_frames = 0
+            if self._state in (GestureState.START, GestureState.HOLD):
+                event = TwoHandGestureEvent(self.name, GestureState.RELEASE, hands, now_ms)
                 self._state = GestureState.IDLE
                 self._last_release_ms = now_ms
                 return event

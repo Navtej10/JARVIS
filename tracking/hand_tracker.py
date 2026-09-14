@@ -58,14 +58,20 @@ class HandFrame:
 class HandTracker:
     """
     Wraps the camera capture + MediaPipe Hands pipeline.
+    
+    Note on Handedness:
+    MediaPipe assumes the camera feed is mirrored (like a typical selfie camera). 
+    If your webcam feed is NOT mirrored (unflipped BGR from cv2), MediaPipe's
+    'Left' prediction will actually correspond to the physical Right hand of a person
+    facing the camera. Make sure to flip the feed or the label if needed in the gesture layer.
 
     Usage:
-        tracker = HandTracker(camera_index=0, max_hands=1)
+        tracker = HandTracker(camera_index=0, max_hands=2)
         for frame in tracker.stream():
             ...
     """
 
-    def __init__(self, camera_index: int = 0, max_hands: int = 1,
+    def __init__(self, camera_index: int = 0, max_hands: int = 2,
                  min_detection_confidence: float = 0.7,
                  min_tracking_confidence: float = 0.5):
         self.camera_index = camera_index
@@ -118,7 +124,9 @@ class HandTracker:
                     continue
                     
                 label = handedness.classification[0].label
-                h_enum = Handedness.LEFT if label.lower() == "left" else Handedness.RIGHT
+                # Invert the label because standard unmirrored webcams cause MediaPipe's
+                # 'Left' to correspond to the physical Right hand.
+                h_enum = Handedness.RIGHT if label.lower() == "left" else Handedness.LEFT
                 
                 landmarks = [Landmark(x=lm.x, y=lm.y, z=lm.z) for lm in hand_landmarks.landmark]
                 

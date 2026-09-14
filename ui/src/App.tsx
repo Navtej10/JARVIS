@@ -27,7 +27,7 @@ export default function App() {
       <CursorHighlight />
       <SystemPanel />
       <ProjectsPanel />
-      {/* TODO(V4): <Scene3D /> */}
+      <Scene3D />
     </div>
   );
 }

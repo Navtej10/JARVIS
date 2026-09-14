@@ -45,3 +45,22 @@ def finger_curl(hand_frame: HandFrame, mcp_idx: int, pip_idx: int, tip_idx: int)
 
 def is_finger_extended_by_curl(hand_frame: HandFrame, mcp_idx: int, pip_idx: int, tip_idx: int, curl_threshold: float = 0.5) -> bool:
     return finger_curl(hand_frame, mcp_idx, pip_idx, tip_idx) > curl_threshold
+
+def calculate_normalized_pinch_distance(hand_frame: HandFrame) -> float | None:
+    """
+    Returns the euclidean distance between thumb_tip and index_tip,
+    normalized by the hand size (wrist to middle knuckle distance).
+    Returns None if the reference distance is 0.
+    """
+    thumb = hand_frame.thumb_tip
+    index = hand_frame.index_tip
+    wrist = hand_frame.wrist
+    middle_knuckle = hand_frame.landmarks[9]
+    
+    pinch_dist = math.dist((thumb.x, thumb.y, thumb.z), (index.x, index.y, index.z))
+    ref_dist = math.dist((wrist.x, wrist.y, wrist.z), (middle_knuckle.x, middle_knuckle.y, middle_knuckle.z))
+    
+    if ref_dist == 0:
+        return None
+        
+    return pinch_dist / ref_dist

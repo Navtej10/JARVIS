@@ -20,6 +20,7 @@ export type GestureEventMessage = {
   target: string | null;
   screen_point: { x: number; y: number };
   timestamp_ms: number;
+  payload?: Record<string, unknown>;
 };
 
 export type ActionMessage = {
